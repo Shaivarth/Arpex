@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+
+    <title>ARPEX Evidence</title>
+
+    <link
+        rel="stylesheet"
+        href="{{ url_for('static', filename='css/style.css') }}"
+    >
+
+</head>
+
+<body>
+
+<div class="navbar">
+
+    <div class="logo">
+        ARPEX
+    </div>
+
+    <div class="nav-links">
+        <a href="/">Dashboard</a>
+        <a href="/devices">Devices</a>
+        <a href="/alerts">Alerts</a>
+        <a href="/evidence">Evidence</a>
+    </div>
+
+</div>
+
+<div class="container">
+
+    <h1>
+        INCIDENT EVIDENCE
+    </h1>
+
+    <table class="device-table">
+
+        <thead>
+
+            <tr>
+
+                <th>ATTACK ID</th>
+
+                <th>TYPE</th>
+
+                <th>STATUS</th>
+
+                <th>VICTIM</th>
+
+                <th>ATTACKER</th>
+                
+                <th>EVIDENCE</th>
+
+                <th>DOWNLOAD</th>
+
+                <th>TIMESTAMP</th>
+
+
+
+            </tr>
+
+        </thead>
+
+        <tbody>
+
+        {% for attack in attacks %}
+
+            <tr>
+
+                <td>
+                    {{ attack.attack_id }}
+                </td>
+
+                <td>
+                    {{ attack.event_type }}
+                </td>
+
+                <td>
+
+                    {% if attack.verification_status == "VERIFIED" %}
+
+                        <span class="danger">
+                            VERIFIED
+                        </span>
+
+                    {% elif attack.verification_status == "PENDING" %}
+
+                        <span class="warning">
+                            PENDING
+                        </span>
+
+                    {% else %}
+
+                        <span class="success">
+                            {{ attack.verification_status }}
+                        </span>
+
+                    {% endif %}
+
+                </td>
+
+                <td>
+                    {{ attack.victim_ip }}
+                </td>
+
+                <td>
+                    {{ attack.attacker_mac }}
+                </td>
+                <td>
+
+                {% if attack.pcap_file %}
+
+                    <span class="success">
+                        AVAILABLE
+                    </span>
+
+                {% else %}
+
+                    <span class="warning">
+                        NONE
+                    </span>
+
+                {% endif %}
+
+                </td>
+                <td>
+                    {{ attack.timestamp.replace("T", " ")[:19] }}
+                </td>
+
+            </tr>
+
+        {% endfor %}
+
+        </tbody>
+
+    </table>
+
+</div>
+<script>
+
+setTimeout(
+    () => location.reload(),
+    10000
+);
+
+</script>
+</body>
+
+</html>

@@ -319,7 +319,8 @@ class DatabaseManager:
         Create a device if it does not exist.
         Returns existing device if MAC already exists.
         """
-
+        
+        mac_address = mac_address.upper()
         existing = self.get_device_by_mac(mac_address)
 
         if existing:
@@ -375,10 +376,10 @@ class DatabaseManager:
         return device
 
 
-    def get_device_by_mac(self, mac_address: str) -> Optional[dict]:
-        """
-        Get device using MAC address.
-        """
+    def get_device_by_mac(
+        self,
+        mac_address: str
+    ) -> Optional[dict]:
 
         cursor = self.connection.cursor()
 
@@ -386,7 +387,7 @@ class DatabaseManager:
             """
             SELECT *
             FROM devices
-            WHERE mac_address = ?
+            WHERE UPPER(mac_address) = UPPER(?)
             """,
             (mac_address,)
         )
@@ -1479,7 +1480,20 @@ class DatabaseManager:
             query,
             tuple(params)
         )
+    def get_all_devices(
+        self
+    ) -> list[dict]:
+        """
+        Return all devices.
+        """
 
+        return self._fetch_all(
+            """
+            SELECT *
+            FROM devices
+            ORDER BY id
+            """
+        )
 
     def filter_attacks(
         self,

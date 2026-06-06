@@ -1,10 +1,15 @@
 # PART 1
 from __future__ import annotations
-
+import socket
 import json
 from pathlib import Path
 from typing import Optional
 
+from zeroconf import (
+    Zeroconf,
+    ServiceBrowser,
+    ServiceListener
+)
 
 DEFAULT_OUI_PATH = Path("config/oui.json")
 
@@ -31,7 +36,7 @@ class FingerprintManager:
     ):
         self.oui_path = oui_path
         self.oui_database: dict[str, str] = {}
-
+        self.load_oui_database()
     def load_oui_database(self) -> None:
         """
         Load OUI database into memory.
@@ -177,3 +182,26 @@ class FingerprintManager:
         return len(
             self.oui_database
         )
+    
+
+    def lookup_hostname(
+        self,
+        ip_address: str
+    ) -> Optional[str]:
+        """
+        Reverse DNS hostname lookup.
+        """
+
+        try:
+
+            hostname, _, _ = (
+                socket.gethostbyaddr(
+                    ip_address
+                )
+            )
+
+            return hostname
+
+        except Exception:
+
+            return None

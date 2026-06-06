@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+
+    <title>ARPEX Alerts</title>
+
+    <link
+        rel="stylesheet"
+        href="{{ url_for('static', filename='css/style.css') }}"
+    >
+
+</head>
+
+<body>
+
+<div class="navbar">
+
+    <div class="logo">
+        ARPEX
+    </div>
+
+    <div class="nav-links">
+        <a href="/">Dashboard</a>
+        <a href="/devices">Devices</a>
+        <a href="/alerts">Alerts</a>
+        <a href="/evidence">Evidence</a>
+    </div>
+
+</div>
+
+<div class="container">
+
+    <h1>
+        SECURITY EVENT FEED
+    </h1>
+
+    {% for event in events %}
+
+    <div class="event-card">
+
+        <div class="event-header">
+
+            {% if event.severity == "HIGH" %}
+                <span class="danger">
+                    HIGH
+                </span>
+
+            {% elif event.severity == "MEDIUM" %}
+                <span class="warning">
+                    MEDIUM
+                </span>
+
+            {% else %}
+                <span class="success">
+                    LOW
+                </span>
+            {% endif %}
+
+            <span>
+                {{ event.event_type }}
+            </span>
+
+        </div>
+
+        <div class="event-time">
+            [{{ event.timestamp.replace("T", " ")[:19] }}]
+        </div>
+
+        <div class="event-message">
+
+            {{ event.message }}
+
+        </div>
+
+    </div>
+
+    {% endfor %}
+
+</div>
+<script>
+
+setTimeout(
+    () => location.reload(),
+    10000
+);
+
+</script>
+</body>
+
+</html>

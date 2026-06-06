@@ -1,5 +1,7 @@
 from __future__ import annotations
 import ipaddress
+import time
+from datetime import datetime
 from collections import Counter, deque
 from scapy.all import wrpcap
 from scapy.all import (
@@ -43,8 +45,10 @@ class Detector:
         fingerprint: FingerprintManager,
         interface: Optional[str] = None
     ):
+        self.verification_in_progress = False
         self.database = database
         self.fingerprint = fingerprint
+
 
         self.interface = interface
 
@@ -58,10 +62,16 @@ class Detector:
         self.detector_thread: Optional[
             threading.Thread
         ] = None
+
+        self.presence_thread: Optional[
+            threading.Thread
+        ] = None
         
         self.verification_attempts = 3
         self.packet_buffer = deque(maxlen=200)
-        
+        self.missed_scans: dict[str, int] = {}
+
+
     def start(self) -> None:
         """
         Start detector thread.
@@ -130,6 +140,8 @@ class Detector:
         self.resolve_gateway_mac()
 
         self.build_baseline()
+
+        self.start_presence_monitor()
 
         self.sniff_packets()
 
@@ -222,7 +234,8 @@ class Detector:
 
         answered, _ = srp(
             packet,
-            timeout=2,
+            timeout=3,
+            retry=2,
             verbose=False,
             iface=self.detect_interface()
         )
@@ -251,7 +264,9 @@ class Detector:
         for device in devices:
 
             ip_address = device["ip"]
-            mac_address = device["mac"]
+            mac_address = (
+                device["mac"].upper()
+            )
 
             self.ip_mac_cache[
                 ip_address
@@ -260,6 +275,12 @@ class Detector:
             vendor = (
                 self.fingerprint.lookup_vendor(
                     mac_address
+                )
+            )
+
+            hostname = (
+                self.fingerprint.lookup_hostname(
+                    ip_address
                 )
             )
 
@@ -275,6 +296,7 @@ class Detector:
             self.database.create_device(
                 mac_address=mac_address,
                 current_ip=ip_address,
+                hostname=hostname,
                 vendor=vendor,
                 is_gateway=(
                     ip_address
@@ -302,9 +324,14 @@ class Detector:
         """
         Process incoming ARP packet.
         """
+        if self.verification_in_progress:
+            return
+        #print("[ARPEX] process_packet called")
 
         if not packet.haslayer(ARP):
             return
+        
+
         
         self.packet_buffer.append(
             packet.copy()
@@ -312,6 +339,21 @@ class Detector:
 
         sender_ip = packet[ARP].psrc
         sender_mac = packet[ARP].hwsrc
+
+        local_ip = get_if_addr(
+            self.detect_interface()
+        )
+
+        if sender_ip == local_ip:
+            return
+
+        INVALID_MACS = {
+            "00:00:00:00:00:00",
+            "ff:ff:ff:ff:ff:ff"
+        }
+
+        if sender_mac.lower() in INVALID_MACS:
+            return
 
         if not sender_ip or not sender_mac:
             return
@@ -331,6 +373,7 @@ class Detector:
 
         if known_mac.upper() != sender_mac.upper():
 
+
             self.handle_mapping_change(
                 sender_ip,
                 known_mac,
@@ -346,7 +389,8 @@ class Detector:
         """
         Handle newly discovered device.
         """
-
+        mac_address = mac_address.upper()
+        
         self.ip_mac_cache[
             ip_address
         ] = mac_address
@@ -396,12 +440,6 @@ class Detector:
         Verification will be implemented
         in Part 4.
         """
-
-        print(
-            "[ARPEX] Mapping change detected "
-            f"{ip_address}: "
-            f"{old_mac} -> {new_mac}"
-        )
 
         self.verify_mapping(
             ip_address,
@@ -643,10 +681,12 @@ class Detector:
         old_mac: str,
         new_mac: str
     ) -> None:
+        
         """
         Verify mapping change using
         multiple ARP requests.
         """
+        self.verification_in_progress = True
 
         results = []
 
@@ -667,15 +707,18 @@ class Detector:
             results
         )
 
+
         if majority is None:
+            self.verification_in_progress = False
 
             self._handle_verification_failure(
                 ip_address
             )
 
             return
-
+        
         if majority == old_mac.upper():
+            self.verification_in_progress = False
 
             self.database.create_event(
                 event_type="SPOOFING_ATTEMPT",
@@ -694,10 +737,160 @@ class Detector:
         self.ip_mac_cache[
             ip_address
         ] = majority
-
+        print(
+            "[ARPEX] VERIFIED ATTACK"
+        )
+        self.verification_in_progress = False
         self.handle_attack(
             ip_address,
             old_mac,
             majority
         )
 
+    def start_presence_monitor(
+        self
+    ) -> None:
+        """
+        Start device presence tracking.
+        """
+
+        self.presence_thread = (
+            threading.Thread(
+                target=self.presence_loop,
+                daemon=True,
+                name="ARPEX-Presence"
+            )
+        )
+
+        self.presence_thread.start()
+
+    def presence_loop(
+        self
+    ) -> None:
+        """
+        Track device online/offline state.
+        """
+
+        while self.running:
+
+            try:
+
+                self.update_device_presence()
+
+            except Exception as exc:
+
+                print(
+                    "[ARPEX] Presence monitor error:",
+                    exc
+                )
+
+            time.sleep(10)
+
+
+    def update_device_presence(
+        self
+    ) -> None:
+        """
+        Update online/offline device state.
+        """
+
+        devices = self.discover_devices()
+
+        active_macs = {
+            device["mac"].upper()
+            for device in devices
+        }
+
+        stored_devices = (
+            self.database.get_all_devices()
+        )
+
+        for device in stored_devices:
+
+            mac = (
+                device["mac_address"]
+                .upper()
+            )
+
+            if mac in active_macs:
+
+                self.missed_scans.pop(
+                    mac,
+                    None
+                )
+
+                if not device[
+                    "currently_online"
+                ]:
+
+                    self.database.update_device(
+                        device["id"],
+                        currently_online=1,
+                        last_seen=datetime.utcnow().isoformat()
+                    )
+
+            else:
+
+                count = (
+                    self.missed_scans.get(
+                        mac,
+                        0
+                    )
+                    + 1
+                )
+
+                self.missed_scans[
+                    mac
+                ] = count
+
+                if (
+                    count >= 3
+                    and
+                    device[
+                        "currently_online"
+                    ]
+                ):
+
+                    self.database.update_device(
+                        device["id"],
+                        currently_online=0
+                    )
+
+        for discovered in devices:
+
+            mac = (
+                discovered["mac"]
+                .upper()
+            )
+
+            existing = (
+                self.database.get_device_by_mac(
+                    mac
+                )
+            )
+
+            if existing:
+                continue
+
+            vendor = (
+                self.fingerprint.lookup_vendor(
+                    mac
+                )
+            )
+
+            hostname = (
+                self.fingerprint.lookup_hostname(
+                    discovered["ip"]
+                )
+            )
+
+            self.database.create_device(
+                mac_address=mac,
+                current_ip=discovered["ip"],
+                hostname=hostname,
+                vendor=vendor
+            )
+
+
+
+            

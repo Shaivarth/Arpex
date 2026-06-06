@@ -84,6 +84,8 @@ class ArpexApplication:
             FingerprintManager()
         )
 
+        self.fingerprint.load_oui_database()
+
         self.alerts = (
             AlertManager()
         )
