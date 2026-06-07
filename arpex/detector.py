@@ -3,6 +3,7 @@ import ipaddress
 import time
 from datetime import datetime
 from collections import Counter, deque
+from scapy import packet
 from scapy.all import wrpcap
 from scapy.all import (
     ARP,
@@ -45,7 +46,8 @@ class Detector:
         fingerprint: FingerprintManager,
         interface: Optional[str] = None
     ):
-        self.verification_in_progress = False
+        self.verification_in_progress = threading.Event()
+
         self.database = database
         self.fingerprint = fingerprint
 
@@ -70,6 +72,8 @@ class Detector:
         self.verification_attempts = 3
         self.packet_buffer = deque(maxlen=200)
         self.missed_scans: dict[str, int] = {}
+
+
 
 
     def start(self) -> None:
@@ -324,14 +328,14 @@ class Detector:
         """
         Process incoming ARP packet.
         """
-        if self.verification_in_progress:
+        if self.verification_in_progress.is_set():
             return
-        #print("[ARPEX] process_packet called")
 
         if not packet.haslayer(ARP):
             return
         
-
+        if packet[ARP].op != 2:
+            return
         
         self.packet_buffer.append(
             packet.copy()
@@ -372,7 +376,6 @@ class Detector:
             return
 
         if known_mac.upper() != sender_mac.upper():
-
 
             self.handle_mapping_change(
                 sender_ip,
@@ -434,18 +437,17 @@ class Detector:
         old_mac: str,
         new_mac: str
     ) -> None:
-        """
-        Mapping change detected.
 
-        Verification will be implemented
-        in Part 4.
-        """
+        threading.Thread(
+            target=self.verify_mapping,
+            args=(
+                ip_address,
+                old_mac,
+                new_mac
+            ),
+            daemon=True
+        ).start()
 
-        self.verify_mapping(
-            ip_address,
-            old_mac,
-            new_mac
-        )
 
     def _send_verification_request(
         self,
@@ -675,77 +677,38 @@ class Detector:
 
             return None
 
-    def verify_mapping(
-        self,
-        ip_address: str,
-        old_mac: str,
-        new_mac: str
-    ) -> None:
-        
-        """
-        Verify mapping change using
-        multiple ARP requests.
-        """
-        self.verification_in_progress = True
+    def verify_mapping(self, ip_address, old_mac, new_mac):
+        self.verification_in_progress.set()  # block other verifications
 
-        results = []
+        try:
+            results = []
+            for _ in range(self.verification_attempts):
+                mac = self._send_verification_request(ip_address)
+                if mac:
+                    results.append(mac.upper())
 
-        for _ in range(
-            self.verification_attempts
-        ):
+            majority = self._get_majority_result(results)
 
-            mac = self._send_verification_request(
-                ip_address
-            )
+            if majority is None:
+                self._handle_verification_failure(ip_address)
+                return
 
-            if mac:
-                results.append(
-                    mac.upper()
+            if majority == old_mac.upper():
+                self.database.create_event(
+                    event_type="SPOOFING_ATTEMPT",
+                    severity="LOW",
+                    device_ip=ip_address,
+                    device_mac=new_mac,
+                    message="ARP spoofing attempt observed but verification did not confirm an attack."
                 )
+                return
 
-        majority = self._get_majority_result(
-            results
-        )
+            self.ip_mac_cache[ip_address] = majority
+            self.handle_attack(ip_address, old_mac, majority)
 
+        finally:
+            self.verification_in_progress.clear()  # allow future verifications
 
-        if majority is None:
-            self.verification_in_progress = False
-
-            self._handle_verification_failure(
-                ip_address
-            )
-
-            return
-        
-        if majority == old_mac.upper():
-            self.verification_in_progress = False
-
-            self.database.create_event(
-                event_type="SPOOFING_ATTEMPT",
-                severity="LOW",
-                device_ip=ip_address,
-                device_mac=new_mac,
-                message=(
-                    "ARP spoofing attempt observed "
-                    "but verification did not "
-                    "confirm an attack."
-                )
-            )
-
-            return
-
-        self.ip_mac_cache[
-            ip_address
-        ] = majority
-        print(
-            "[ARPEX] VERIFIED ATTACK"
-        )
-        self.verification_in_progress = False
-        self.handle_attack(
-            ip_address,
-            old_mac,
-            majority
-        )
 
     def start_presence_monitor(
         self
