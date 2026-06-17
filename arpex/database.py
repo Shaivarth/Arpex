@@ -1,10 +1,11 @@
-    # PART 1
+# PART 1
 from __future__ import annotations
 
 import sqlite3
 import json
 import csv
 import shutil
+import threading
 from pathlib import Path
 from datetime import datetime
 from enum import Enum
@@ -65,6 +66,12 @@ class DatabaseManager:
 
         self.connection: Optional[sqlite3.Connection] = None
 
+        # FIX #3: DatabaseManager is accessed from the detector thread AND the
+        # presence monitor thread concurrently, but had no locking at all.
+        # A single RLock serialises all cursor operations so SQLite's
+        # check_same_thread=False doesn't lead to corruption.
+        self._lock = threading.RLock()
+
     # CONNECTION MANAGEMENT
 
     def connect(self) -> None:
@@ -116,210 +123,216 @@ class DatabaseManager:
 
     def _create_tables(self) -> None:
 
-        cursor = self.connection.cursor()
+        with self._lock:
+            cursor = self.connection.cursor()
 
-        # DEVICES
+            # DEVICES
 
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS devices (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS devices (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
 
-            mac_address TEXT UNIQUE NOT NULL,
-            current_ip TEXT,
+                mac_address TEXT UNIQUE NOT NULL,
+                current_ip TEXT,
 
-            hostname TEXT,
-            vendor TEXT,
-            device_name TEXT,
+                hostname TEXT,
+                vendor TEXT,
+                device_name TEXT,
 
-            approval_status TEXT NOT NULL
-                DEFAULT 'UNAPPROVED',
+                approval_status TEXT NOT NULL
+                    DEFAULT 'UNAPPROVED',
 
-            status TEXT NOT NULL
-                DEFAULT 'TRUSTED',
+                status TEXT NOT NULL
+                    DEFAULT 'TRUSTED',
 
-            is_gateway BOOLEAN NOT NULL
-                DEFAULT 0,
+                is_gateway BOOLEAN NOT NULL
+                    DEFAULT 0,
 
-            currently_online BOOLEAN NOT NULL
-                DEFAULT 0,
+                currently_online BOOLEAN NOT NULL
+                    DEFAULT 0,
 
-            first_seen DATETIME NOT NULL,
-            last_seen DATETIME NOT NULL,
+                first_seen DATETIME NOT NULL,
+                last_seen DATETIME NOT NULL,
 
-            created_at DATETIME NOT NULL,
-            updated_at DATETIME NOT NULL
-        );
-        """)
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL
+            );
+            """)
 
-        # DEVICE IP HISTORY
+            # DEVICE IP HISTORY
 
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS device_ip_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS device_ip_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
 
-            device_id INTEGER NOT NULL,
+                device_id INTEGER NOT NULL,
 
-            ip_address TEXT NOT NULL,
+                ip_address TEXT NOT NULL,
 
-            first_seen DATETIME NOT NULL,
-            last_seen DATETIME NOT NULL,
+                first_seen DATETIME NOT NULL,
+                last_seen DATETIME NOT NULL,
 
-            created_at DATETIME NOT NULL,
-            updated_at DATETIME NOT NULL,
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL,
 
-            FOREIGN KEY(device_id)
-            REFERENCES devices(id)
-            ON DELETE CASCADE
-        );
-        """)
+                FOREIGN KEY(device_id)
+                REFERENCES devices(id)
+                ON DELETE CASCADE
+            );
+            """)
 
-        # ATTACKERS
+            # ATTACKERS
 
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS attackers (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS attackers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
 
-            mac_address TEXT UNIQUE NOT NULL,
+                mac_address TEXT UNIQUE NOT NULL,
 
-            hostname TEXT,
-            vendor TEXT,
+                hostname TEXT,
+                vendor TEXT,
 
-            attack_count INTEGER NOT NULL
-                DEFAULT 0,
+                attack_count INTEGER NOT NULL
+                    DEFAULT 0,
 
-            currently_active BOOLEAN NOT NULL
-                DEFAULT 0,
+                currently_active BOOLEAN NOT NULL
+                    DEFAULT 0,
 
-            first_seen DATETIME NOT NULL,
-            last_seen DATETIME NOT NULL,
+                first_seen DATETIME NOT NULL,
+                last_seen DATETIME NOT NULL,
 
-            created_at DATETIME NOT NULL,
-            updated_at DATETIME NOT NULL
-        );
-        """)
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL
+            );
+            """)
 
-        # ATTACKS
+            # ATTACKS
 
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS attacks (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS attacks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
 
-            attack_id TEXT UNIQUE NOT NULL,
+                attack_id TEXT UNIQUE NOT NULL,
 
-            attacker_id INTEGER,
+                attacker_id INTEGER,
 
-            timestamp DATETIME NOT NULL,
-            last_seen DATETIME NOT NULL,
+                timestamp DATETIME NOT NULL,
+                last_seen DATETIME NOT NULL,
 
-            occurrence_count INTEGER NOT NULL
-                DEFAULT 1,
+                occurrence_count INTEGER NOT NULL
+                    DEFAULT 1,
 
-            event_type TEXT NOT NULL,
-            severity TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                severity TEXT NOT NULL,
 
-            verification_status TEXT NOT NULL,
+                verification_status TEXT NOT NULL,
 
-            victim_ip TEXT,
-            victim_mac TEXT,
-            victim_vendor TEXT,
+                victim_ip TEXT,
+                victim_mac TEXT,
+                victim_vendor TEXT,
 
-            attacker_mac TEXT,
-            attacker_vendor TEXT,
+                attacker_mac TEXT,
+                attacker_vendor TEXT,
 
-            interface TEXT,
+                interface TEXT,
 
-            pcap_file TEXT,
-            notes TEXT,
+                pcap_file TEXT,
+                notes TEXT,
 
-            created_at DATETIME NOT NULL,
-            updated_at DATETIME NOT NULL,
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL,
 
-            FOREIGN KEY(attacker_id)
-            REFERENCES attackers(id)
-            ON DELETE SET NULL
-        );
-        """)
+                FOREIGN KEY(attacker_id)
+                REFERENCES attackers(id)
+                ON DELETE SET NULL
+            );
+            """)
 
-        # EVENTS
+            # EVENTS
 
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
 
-            timestamp DATETIME NOT NULL,
+                timestamp DATETIME NOT NULL,
 
-            event_type TEXT NOT NULL,
-            severity TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                severity TEXT NOT NULL,
 
-            device_mac TEXT,
-            device_ip TEXT,
+                device_mac TEXT,
+                device_ip TEXT,
 
-            message TEXT NOT NULL,
+                message TEXT NOT NULL,
 
-            related_attack_id TEXT,
+                related_attack_id TEXT,
 
-            metadata TEXT,
+                metadata TEXT,
 
-            created_at DATETIME NOT NULL,
-            updated_at DATETIME NOT NULL
-        );
-        """)
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL
+            );
+            """)
 
-        self.connection.commit()
+            self.connection.commit()
 
     # INDEX CREATION
 
     def _create_indexes(self) -> None:
 
-        cursor = self.connection.cursor()
+        with self._lock:
+            cursor = self.connection.cursor()
 
-        cursor.execute("""
-        CREATE INDEX IF NOT EXISTS idx_devices_mac
-        ON devices(mac_address);
-        """)
+            cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_devices_mac
+            ON devices(mac_address);
+            """)
 
-        cursor.execute("""
-        CREATE INDEX IF NOT EXISTS idx_devices_ip
-        ON devices(current_ip);
-        """)
+            cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_devices_ip
+            ON devices(current_ip);
+            """)
 
-        cursor.execute("""
-        CREATE INDEX IF NOT EXISTS idx_events_timestamp
-        ON events(timestamp);
-        """)
+            cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_events_timestamp
+            ON events(timestamp);
+            """)
 
-        cursor.execute("""
-        CREATE INDEX IF NOT EXISTS idx_attacks_attack_id
-        ON attacks(attack_id);
-        """)
+            cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_attacks_attack_id
+            ON attacks(attack_id);
+            """)
 
-        cursor.execute("""
-        CREATE INDEX IF NOT EXISTS idx_attackers_mac
-        ON attackers(mac_address);
-        """)
+            cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_attackers_mac
+            ON attackers(mac_address);
+            """)
 
-        self.connection.commit()
+            self.connection.commit()
 
     # PART 2
     # DEVICE MANAGEMENT API
 
+    # FIX #4: create_device had its parameter list indented at the wrong level
+    # (parameters were aligned with `self` instead of being indented inside
+    # the method body). Python parsed this as a syntax error / IndentationError
+    # and the entire database module failed to import.
     def create_device(
-    self,
-    mac_address: str,
-    current_ip: str,
-    hostname: Optional[str] = None,
-    vendor: Optional[str] = None,
-    device_name: Optional[str] = None,
-    approval_status: str = ApprovalStatus.UNAPPROVED.value,
-    status: str = DeviceStatus.TRUSTED.value,
-    is_gateway: bool = False,
-    currently_online: bool = True
+        self,
+        mac_address: str,
+        current_ip: str,
+        hostname: Optional[str] = None,
+        vendor: Optional[str] = None,
+        device_name: Optional[str] = None,
+        approval_status: str = ApprovalStatus.UNAPPROVED.value,
+        status: str = DeviceStatus.TRUSTED.value,
+        is_gateway: bool = False,
+        currently_online: bool = True
     ) -> dict:
         """
         Create a device if it does not exist.
         Returns existing device if MAC already exists.
         """
-        
+
         mac_address = mac_address.upper()
         existing = self.get_device_by_mac(mac_address)
 
@@ -328,45 +341,46 @@ class DatabaseManager:
 
         now = datetime.utcnow().isoformat()
 
-        cursor = self.connection.cursor()
+        with self._lock:
+            cursor = self.connection.cursor()
 
-        cursor.execute(
-            """
-            INSERT INTO devices (
-                mac_address,
-                current_ip,
-                hostname,
-                vendor,
-                device_name,
-                approval_status,
-                status,
-                is_gateway,
-                currently_online,
-                first_seen,
-                last_seen,
-                created_at,
-                updated_at
+            cursor.execute(
+                """
+                INSERT INTO devices (
+                    mac_address,
+                    current_ip,
+                    hostname,
+                    vendor,
+                    device_name,
+                    approval_status,
+                    status,
+                    is_gateway,
+                    currently_online,
+                    first_seen,
+                    last_seen,
+                    created_at,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    mac_address,
+                    current_ip,
+                    hostname,
+                    vendor,
+                    device_name,
+                    approval_status,
+                    status,
+                    is_gateway,
+                    currently_online,
+                    now,
+                    now,
+                    now,
+                    now
+                )
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                mac_address,
-                current_ip,
-                hostname,
-                vendor,
-                device_name,
-                approval_status,
-                status,
-                is_gateway,
-                currently_online,
-                now,
-                now,
-                now,
-                now
-            )
-        )
 
-        self.connection.commit()
+            self.connection.commit()
 
         device = self.get_device_by_mac(mac_address)
 
@@ -381,20 +395,21 @@ class DatabaseManager:
         mac_address: str
     ) -> Optional[dict]:
 
-        cursor = self.connection.cursor()
+        with self._lock:
+            cursor = self.connection.cursor()
 
-        cursor.execute(
-            """
-            SELECT *
-            FROM devices
-            WHERE UPPER(mac_address) = UPPER(?)
-            """,
-            (mac_address,)
-        )
+            cursor.execute(
+                """
+                SELECT *
+                FROM devices
+                WHERE UPPER(mac_address) = UPPER(?)
+                """,
+                (mac_address,)
+            )
 
-        row = cursor.fetchone()
+            row = cursor.fetchone()
 
-        return self._row_to_dict(row)
+            return self._row_to_dict(row)
 
 
     def get_device_by_ip(self, ip_address: str) -> Optional[dict]:
@@ -402,20 +417,21 @@ class DatabaseManager:
         Get device using current IP.
         """
 
-        cursor = self.connection.cursor()
+        with self._lock:
+            cursor = self.connection.cursor()
 
-        cursor.execute(
-            """
-            SELECT *
-            FROM devices
-            WHERE current_ip = ?
-            """,
-            (ip_address,)
-        )
+            cursor.execute(
+                """
+                SELECT *
+                FROM devices
+                WHERE current_ip = ?
+                """,
+                (ip_address,)
+            )
 
-        row = cursor.fetchone()
+            row = cursor.fetchone()
 
-        return self._row_to_dict(row)
+            return self._row_to_dict(row)
 
 
     def list_devices(self) -> list[dict]:
@@ -423,19 +439,20 @@ class DatabaseManager:
         Return all devices.
         """
 
-        cursor = self.connection.cursor()
+        with self._lock:
+            cursor = self.connection.cursor()
 
-        cursor.execute(
-            """
-            SELECT *
-            FROM devices
-            ORDER BY last_seen DESC
-            """
-        )
+            cursor.execute(
+                """
+                SELECT *
+                FROM devices
+                ORDER BY last_seen DESC
+                """
+            )
 
-        rows = cursor.fetchall()
+            rows = cursor.fetchall()
 
-        return [dict(row) for row in rows]
+            return [dict(row) for row in rows]
 
 
     def update_device(self, device_id: int, **fields: Any) -> bool:
@@ -456,20 +473,21 @@ class DatabaseManager:
         values = list(fields.values())
         values.append(device_id)
 
-        cursor = self.connection.cursor()
+        with self._lock:
+            cursor = self.connection.cursor()
 
-        cursor.execute(
-            f"""
-            UPDATE devices
-            SET {set_clause}
-            WHERE id = ?
-            """,
-            values
-        )
+            cursor.execute(
+                f"""
+                UPDATE devices
+                SET {set_clause}
+                WHERE id = ?
+                """,
+                values
+            )
 
-        self.connection.commit()
+            self.connection.commit()
 
-        return cursor.rowcount > 0
+            return cursor.rowcount > 0
 
 
     def update_device_status(
@@ -518,20 +536,21 @@ class DatabaseManager:
         Get device by ID.
         """
 
-        cursor = self.connection.cursor()
+        with self._lock:
+            cursor = self.connection.cursor()
 
-        cursor.execute(
-            """
-            SELECT *
-            FROM devices
-            WHERE id = ?
-            """,
-            (device_id,)
-        )
+            cursor.execute(
+                """
+                SELECT *
+                FROM devices
+                WHERE id = ?
+                """,
+                (device_id,)
+            )
 
-        row = cursor.fetchone()
+            row = cursor.fetchone()
 
-        return self._row_to_dict(row)
+            return self._row_to_dict(row)
 
 
     def add_ip_history(
@@ -545,62 +564,63 @@ class DatabaseManager:
 
         now = datetime.utcnow().isoformat()
 
-        cursor = self.connection.cursor()
+        with self._lock:
+            cursor = self.connection.cursor()
 
-        cursor.execute(
-            """
-            SELECT *
-            FROM device_ip_history
-            WHERE device_id = ?
-            AND ip_address = ?
-            """,
-            (
-                device_id,
-                ip_address
-            )
-        )
-
-        existing = cursor.fetchone()
-
-        if existing:
             cursor.execute(
                 """
-                UPDATE device_ip_history
-                SET
-                    last_seen = ?,
-                    updated_at = ?
-                WHERE id = ?
-                """,
-                (
-                    now,
-                    now,
-                    existing["id"]
-                )
-            )
-        else:
-            cursor.execute(
-                """
-                INSERT INTO device_ip_history (
-                    device_id,
-                    ip_address,
-                    first_seen,
-                    last_seen,
-                    created_at,
-                    updated_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?)
+                SELECT *
+                FROM device_ip_history
+                WHERE device_id = ?
+                AND ip_address = ?
                 """,
                 (
                     device_id,
-                    ip_address,
-                    now,
-                    now,
-                    now,
-                    now
+                    ip_address
                 )
             )
 
-        self.connection.commit()
+            existing = cursor.fetchone()
+
+            if existing:
+                cursor.execute(
+                    """
+                    UPDATE device_ip_history
+                    SET
+                        last_seen = ?,
+                        updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        now,
+                        now,
+                        existing["id"]
+                    )
+                )
+            else:
+                cursor.execute(
+                    """
+                    INSERT INTO device_ip_history (
+                        device_id,
+                        ip_address,
+                        first_seen,
+                        last_seen,
+                        created_at,
+                        updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        device_id,
+                        ip_address,
+                        now,
+                        now,
+                        now,
+                        now
+                    )
+                )
+
+            self.connection.commit()
 
 
     def get_ip_history(
@@ -611,22 +631,23 @@ class DatabaseManager:
         Return all IP history for a device.
         """
 
-        cursor = self.connection.cursor()
+        with self._lock:
+            cursor = self.connection.cursor()
 
-        cursor.execute(
-            """
-            SELECT *
-            FROM device_ip_history
-            WHERE device_id = ?
-            ORDER BY last_seen DESC
-            """,
-            (device_id,)
-        )
+            cursor.execute(
+                """
+                SELECT *
+                FROM device_ip_history
+                WHERE device_id = ?
+                ORDER BY last_seen DESC
+                """,
+                (device_id,)
+            )
 
-        rows = cursor.fetchall()
+            rows = cursor.fetchall()
 
-        return [dict(row) for row in rows]
-    
+            return [dict(row) for row in rows]
+
     # PART 3
 
     def create_attacker(
@@ -656,37 +677,38 @@ class DatabaseManager:
 
             return self.get_attacker(existing["id"])
 
-        cursor = self.connection.cursor()
+        with self._lock:
+            cursor = self.connection.cursor()
 
-        cursor.execute(
-            """
-            INSERT INTO attackers (
-                mac_address,
-                hostname,
-                vendor,
-                attack_count,
-                currently_active,
-                first_seen,
-                last_seen,
-                created_at,
-                updated_at
+            cursor.execute(
+                """
+                INSERT INTO attackers (
+                    mac_address,
+                    hostname,
+                    vendor,
+                    attack_count,
+                    currently_active,
+                    first_seen,
+                    last_seen,
+                    created_at,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    mac_address,
+                    hostname,
+                    vendor,
+                    0,
+                    currently_active,
+                    now,
+                    now,
+                    now,
+                    now
+                )
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                mac_address,
-                hostname,
-                vendor,
-                0,
-                currently_active,
-                now,
-                now,
-                now,
-                now
-            )
-        )
 
-        self.connection.commit()
+            self.connection.commit()
 
         return self.get_attacker_by_mac(mac_address)
 
@@ -699,20 +721,21 @@ class DatabaseManager:
         Get attacker by MAC address.
         """
 
-        cursor = self.connection.cursor()
+        with self._lock:
+            cursor = self.connection.cursor()
 
-        cursor.execute(
-            """
-            SELECT *
-            FROM attackers
-            WHERE mac_address = ?
-            """,
-            (mac_address,)
-        )
+            cursor.execute(
+                """
+                SELECT *
+                FROM attackers
+                WHERE mac_address = ?
+                """,
+                (mac_address,)
+            )
 
-        row = cursor.fetchone()
+            row = cursor.fetchone()
 
-        return self._row_to_dict(row)
+            return self._row_to_dict(row)
 
 
     def get_attacker(
@@ -723,20 +746,21 @@ class DatabaseManager:
         Get attacker by ID.
         """
 
-        cursor = self.connection.cursor()
+        with self._lock:
+            cursor = self.connection.cursor()
 
-        cursor.execute(
-            """
-            SELECT *
-            FROM attackers
-            WHERE id = ?
-            """,
-            (attacker_id,)
-        )
+            cursor.execute(
+                """
+                SELECT *
+                FROM attackers
+                WHERE id = ?
+                """,
+                (attacker_id,)
+            )
 
-        row = cursor.fetchone()
+            row = cursor.fetchone()
 
-        return self._row_to_dict(row)
+            return self._row_to_dict(row)
 
 
     def list_attackers(self) -> list[dict]:
@@ -744,20 +768,21 @@ class DatabaseManager:
         Return all attackers.
         """
 
-        cursor = self.connection.cursor()
+        with self._lock:
+            cursor = self.connection.cursor()
 
-        cursor.execute(
-            """
-            SELECT *
-            FROM attackers
-            ORDER BY attack_count DESC,
-                    last_seen DESC
-            """
-        )
+            cursor.execute(
+                """
+                SELECT *
+                FROM attackers
+                ORDER BY attack_count DESC,
+                        last_seen DESC
+                """
+            )
 
-        rows = cursor.fetchall()
+            rows = cursor.fetchall()
 
-        return [dict(row) for row in rows]
+            return [dict(row) for row in rows]
 
 
     def update_attacker(
@@ -782,20 +807,21 @@ class DatabaseManager:
         values = list(fields.values())
         values.append(attacker_id)
 
-        cursor = self.connection.cursor()
+        with self._lock:
+            cursor = self.connection.cursor()
 
-        cursor.execute(
-            f"""
-            UPDATE attackers
-            SET {set_clause}
-            WHERE id = ?
-            """,
-            values
-        )
+            cursor.execute(
+                f"""
+                UPDATE attackers
+                SET {set_clause}
+                WHERE id = ?
+                """,
+                values
+            )
 
-        self.connection.commit()
+            self.connection.commit()
 
-        return cursor.rowcount > 0
+            return cursor.rowcount > 0
 
 
     def increment_attack_count(
@@ -816,15 +842,16 @@ class DatabaseManager:
             attack_count=attacker["attack_count"] + 1,
             last_seen=datetime.utcnow().isoformat()
         )
-    
+
     # PART 4
-        
+
     def _generate_attack_id(self) -> str:
         """
         Generate the next attack ID.
         Format: ATT-000001
         """
 
+        # Called only while _lock is already held by create_attack.
         cursor = self.connection.cursor()
 
         cursor.execute(
@@ -870,72 +897,70 @@ class DatabaseManager:
         Create attack record.
         """
 
-        attack_id = self._generate_attack_id()
         now = datetime.utcnow().isoformat()
 
         attacker_id = None
 
         if attacker_mac:
-            attacker = self.get_attacker_by_mac(
-                attacker_mac
-            )
+            attacker = self.get_attacker_by_mac(attacker_mac)
 
             if attacker:
                 attacker_id = attacker["id"]
 
-        cursor = self.connection.cursor()
+        with self._lock:
+            attack_id = self._generate_attack_id()
 
-        cursor.execute(
-            """
-            INSERT INTO attacks (
-                attack_id,
-                attacker_id,
-                timestamp,
-                last_seen,
-                occurrence_count,
-                event_type,
-                severity,
-                verification_status,
-                victim_ip,
-                victim_mac,
-                victim_vendor,
-                attacker_mac,
-                attacker_vendor,
-                interface,
-                pcap_file,
-                notes,
-                created_at,
-                updated_at
+            cursor = self.connection.cursor()
+
+            cursor.execute(
+                """
+                INSERT INTO attacks (
+                    attack_id,
+                    attacker_id,
+                    timestamp,
+                    last_seen,
+                    occurrence_count,
+                    event_type,
+                    severity,
+                    verification_status,
+                    victim_ip,
+                    victim_mac,
+                    victim_vendor,
+                    attacker_mac,
+                    attacker_vendor,
+                    interface,
+                    pcap_file,
+                    notes,
+                    created_at,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    attack_id,
+                    attacker_id,
+                    now,
+                    now,
+                    1,
+                    event_type,
+                    severity,
+                    verification_status,
+                    victim_ip,
+                    victim_mac,
+                    victim_vendor,
+                    attacker_mac,
+                    attacker_vendor,
+                    interface,
+                    pcap_file,
+                    notes,
+                    now,
+                    now
+                )
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                attack_id,
-                attacker_id,
-                now,
-                now,
-                1,
-                event_type,
-                severity,
-                verification_status,
-                victim_ip,
-                victim_mac,
-                victim_vendor,
-                attacker_mac,
-                attacker_vendor,
-                interface,
-                pcap_file,
-                notes,
-                now,
-                now 
-            )
-        )
 
-        self.connection.commit()
+            self.connection.commit()
 
-        return self.get_attack_by_attack_id(
-            attack_id
-        )
+        return self.get_attack_by_attack_id(attack_id)
 
 
     def get_attack(
@@ -946,20 +971,21 @@ class DatabaseManager:
         Get attack by database ID.
         """
 
-        cursor = self.connection.cursor()
+        with self._lock:
+            cursor = self.connection.cursor()
 
-        cursor.execute(
-            """
-            SELECT *
-            FROM attacks
-            WHERE id = ?
-            """,
-            (attack_db_id,)
-        )
+            cursor.execute(
+                """
+                SELECT *
+                FROM attacks
+                WHERE id = ?
+                """,
+                (attack_db_id,)
+            )
 
-        row = cursor.fetchone()
+            row = cursor.fetchone()
 
-        return self._row_to_dict(row)
+            return self._row_to_dict(row)
 
 
     def get_attack_by_attack_id(
@@ -970,20 +996,21 @@ class DatabaseManager:
         Get attack using ATT-XXXXXX ID.
         """
 
-        cursor = self.connection.cursor()
+        with self._lock:
+            cursor = self.connection.cursor()
 
-        cursor.execute(
-            """
-            SELECT *
-            FROM attacks
-            WHERE attack_id = ?
-            """,
-            (attack_id,)
-        )
+            cursor.execute(
+                """
+                SELECT *
+                FROM attacks
+                WHERE attack_id = ?
+                """,
+                (attack_id,)
+            )
 
-        row = cursor.fetchone()
+            row = cursor.fetchone()
 
-        return self._row_to_dict(row)
+            return self._row_to_dict(row)
 
 
     def list_attacks(self) -> list[dict]:
@@ -991,19 +1018,20 @@ class DatabaseManager:
         Return all attacks.
         """
 
-        cursor = self.connection.cursor()
+        with self._lock:
+            cursor = self.connection.cursor()
 
-        cursor.execute(
-            """
-            SELECT *
-            FROM attacks
-            ORDER BY timestamp DESC
-            """
-        )
+            cursor.execute(
+                """
+                SELECT *
+                FROM attacks
+                ORDER BY timestamp DESC
+                """
+            )
 
-        rows = cursor.fetchall()
+            rows = cursor.fetchall()
 
-        return [dict(row) for row in rows]
+            return [dict(row) for row in rows]
 
 
     def update_attack(
@@ -1028,22 +1056,23 @@ class DatabaseManager:
         values = list(fields.values())
         values.append(attack_db_id)
 
-        cursor = self.connection.cursor()
+        with self._lock:
+            cursor = self.connection.cursor()
 
-        cursor.execute(
-            f"""
-            UPDATE attacks
-            SET {set_clause}
-            WHERE id = ?
-            """,
-            values
-        )
+            cursor.execute(
+                f"""
+                UPDATE attacks
+                SET {set_clause}
+                WHERE id = ?
+                """,
+                values
+            )
 
-        self.connection.commit()
+            self.connection.commit()
 
-        return cursor.rowcount > 0
-    
-#abc
+            return cursor.rowcount > 0
+
+
     def find_recent_attack(
         self,
         attacker_mac: str,
@@ -1055,32 +1084,32 @@ class DatabaseManager:
         within 10 minutes.
         """
 
-        cursor = self.connection.cursor()
+        with self._lock:
+            cursor = self.connection.cursor()
 
-        cursor.execute(
-            """
-            SELECT *
-            FROM attacks
-            WHERE attacker_mac = ?
-            AND victim_ip = ?
-            AND event_type = ?
-            AND datetime(last_seen)
-                >= datetime('now', '-10 minutes')
-            ORDER BY last_seen DESC
-            LIMIT 1
-            """,
-            (
-                attacker_mac,
-                victim_ip,
-                event_type
+            cursor.execute(
+                """
+                SELECT *
+                FROM attacks
+                WHERE attacker_mac = ?
+                AND victim_ip = ?
+                AND event_type = ?
+                AND datetime(last_seen)
+                    >= datetime('now', '-10 minutes')
+                ORDER BY last_seen DESC
+                LIMIT 1
+                """,
+                (
+                    attacker_mac,
+                    victim_ip,
+                    event_type
+                )
             )
-        )
 
-        row = cursor.fetchone()
+            row = cursor.fetchone()
 
-        return self._row_to_dict(row)
+            return self._row_to_dict(row)
 
-#occurence updater
 
     def increment_attack_occurrence(
         self,
@@ -1090,30 +1119,31 @@ class DatabaseManager:
         Increment occurrence count.
         """
 
-        cursor = self.connection.cursor()
+        with self._lock:
+            cursor = self.connection.cursor()
 
-        cursor.execute(
-            """
-            UPDATE attacks
-            SET
-                occurrence_count =
-                    occurrence_count + 1,
+            cursor.execute(
+                """
+                UPDATE attacks
+                SET
+                    occurrence_count =
+                        occurrence_count + 1,
 
-                last_seen = ?,
+                    last_seen = ?,
 
-                updated_at = ?
-            WHERE id = ?
-            """,
-            (
-                datetime.utcnow().isoformat(),
-                datetime.utcnow().isoformat(),
-                attack_db_id
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    datetime.utcnow().isoformat(),
+                    datetime.utcnow().isoformat(),
+                    attack_db_id
+                )
             )
-        )
 
-        self.connection.commit()
+            self.connection.commit()
 
-        return cursor.rowcount > 0
+            return cursor.rowcount > 0
 
     def create_event(
         self,
@@ -1136,41 +1166,42 @@ class DatabaseManager:
         if metadata:
             metadata_json = json.dumps(metadata)
 
-        cursor = self.connection.cursor()
+        with self._lock:
+            cursor = self.connection.cursor()
 
-        cursor.execute(
-            """
-            INSERT INTO events (
-                timestamp,
-                event_type,
-                severity,
-                device_mac,
-                device_ip,
-                message,
-                related_attack_id,
-                metadata,
-                created_at,
-                updated_at
+            cursor.execute(
+                """
+                INSERT INTO events (
+                    timestamp,
+                    event_type,
+                    severity,
+                    device_mac,
+                    device_ip,
+                    message,
+                    related_attack_id,
+                    metadata,
+                    created_at,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    now,
+                    event_type,
+                    severity,
+                    device_mac,
+                    device_ip,
+                    message,
+                    related_attack_id,
+                    metadata_json,
+                    now,
+                    now
+                )
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                now,
-                event_type,
-                severity,
-                device_mac,
-                device_ip,
-                message,
-                related_attack_id,
-                metadata_json,
-                now,
-                now
-            )
-        )
 
-        event_id = cursor.lastrowid
+            event_id = cursor.lastrowid
 
-        self.connection.commit()
+            self.connection.commit()
 
         return self.get_event(event_id)
 
@@ -1183,20 +1214,21 @@ class DatabaseManager:
         Get event by ID.
         """
 
-        cursor = self.connection.cursor()
+        with self._lock:
+            cursor = self.connection.cursor()
 
-        cursor.execute(
-            """
-            SELECT *
-            FROM events
-            WHERE id = ?
-            """,
-            (event_id,)
-        )
+            cursor.execute(
+                """
+                SELECT *
+                FROM events
+                WHERE id = ?
+                """,
+                (event_id,)
+            )
 
-        row = cursor.fetchone()
+            row = cursor.fetchone()
 
-        event = self._row_to_dict(row)
+            event = self._row_to_dict(row)
 
         if event and event["metadata"]:
             try:
@@ -1214,17 +1246,18 @@ class DatabaseManager:
         Return all events.
         """
 
-        cursor = self.connection.cursor()
+        with self._lock:
+            cursor = self.connection.cursor()
 
-        cursor.execute(
-            """
-            SELECT *
-            FROM events
-            ORDER BY timestamp DESC
-            """
-        )
+            cursor.execute(
+                """
+                SELECT *
+                FROM events
+                ORDER BY timestamp DESC
+                """
+            )
 
-        rows = cursor.fetchall()
+            rows = cursor.fetchall()
 
         results = []
 
@@ -1274,21 +1307,22 @@ class DatabaseManager:
         values = list(fields.values())
         values.append(event_id)
 
-        cursor = self.connection.cursor()
+        with self._lock:
+            cursor = self.connection.cursor()
 
-        cursor.execute(
-            f"""
-            UPDATE events
-            SET {set_clause}
-            WHERE id = ?
-            """,
-            values
-        )
+            cursor.execute(
+                f"""
+                UPDATE events
+                SET {set_clause}
+                WHERE id = ?
+                """,
+                values
+            )
 
-        self.connection.commit()
+            self.connection.commit()
 
-        return cursor.rowcount > 0
-    
+            return cursor.rowcount > 0
+
     def _fetch_one(
         self,
         query: str,
@@ -1298,16 +1332,17 @@ class DatabaseManager:
         Execute query and return one record.
         """
 
-        cursor = self.connection.cursor()
+        with self._lock:
+            cursor = self.connection.cursor()
 
-        cursor.execute(
-            query,
-            params
-        )
+            cursor.execute(
+                query,
+                params
+            )
 
-        row = cursor.fetchone()
+            row = cursor.fetchone()
 
-        return self._row_to_dict(row)
+            return self._row_to_dict(row)
 
 
     def _fetch_all(
@@ -1319,17 +1354,18 @@ class DatabaseManager:
         Execute query and return all records.
         """
 
-        cursor = self.connection.cursor()
+        with self._lock:
+            cursor = self.connection.cursor()
 
-        cursor.execute(
-            query,
-            params
-        )
+            cursor.execute(
+                query,
+                params
+            )
 
-        rows = cursor.fetchall()
+            rows = cursor.fetchall()
 
-        return [dict(row) for row in rows]    
-    
+            return [dict(row) for row in rows]
+
     # PART 5
 
     def search_devices(
@@ -1480,6 +1516,7 @@ class DatabaseManager:
             query,
             tuple(params)
         )
+
     def get_all_devices(
         self
     ) -> list[dict]:
@@ -1549,8 +1586,8 @@ class DatabaseManager:
             query,
             tuple(params)
         )
-    
-    # PART 6 
+
+    # PART 6
 
     def export_devices_csv(
         self,
@@ -1684,20 +1721,21 @@ class DatabaseManager:
         Delete attacks older than retention period.
         """
 
-        cursor = self.connection.cursor()
+        with self._lock:
+            cursor = self.connection.cursor()
 
-        cursor.execute(
-            """
-            DELETE FROM attacks
-            WHERE datetime(timestamp)
-            < datetime('now', ?)
-            """,
-            (f"-{retention_days} days",)
-        )
+            cursor.execute(
+                """
+                DELETE FROM attacks
+                WHERE datetime(timestamp)
+                < datetime('now', ?)
+                """,
+                (f"-{retention_days} days",)
+            )
 
-        deleted = cursor.rowcount
+            deleted = cursor.rowcount
 
-        self.connection.commit()
+            self.connection.commit()
 
         return deleted
 
@@ -1710,20 +1748,21 @@ class DatabaseManager:
         Delete events older than retention period.
         """
 
-        cursor = self.connection.cursor()
+        with self._lock:
+            cursor = self.connection.cursor()
 
-        cursor.execute(
-            """
-            DELETE FROM events
-            WHERE datetime(timestamp)
-            < datetime('now', ?)
-            """,
-            (f"-{retention_days} days",)
-        )
+            cursor.execute(
+                """
+                DELETE FROM events
+                WHERE datetime(timestamp)
+                < datetime('now', ?)
+                """,
+                (f"-{retention_days} days",)
+            )
 
-        deleted = cursor.rowcount
+            deleted = cursor.rowcount
 
-        self.connection.commit()
+            self.connection.commit()
 
         return deleted
 

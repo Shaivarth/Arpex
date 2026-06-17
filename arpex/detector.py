@@ -3,7 +3,7 @@ import ipaddress
 import time
 from datetime import datetime
 from collections import Counter, deque
-from scapy import packet
+
 from scapy.all import wrpcap
 from scapy.all import (
     ARP,
@@ -51,7 +51,6 @@ class Detector:
         self.database = database
         self.fingerprint = fingerprint
 
-
         self.interface = interface
 
         self.running = False
@@ -61,6 +60,10 @@ class Detector:
 
         self.ip_mac_cache: dict[str, str] = {}
 
+        # Lock protecting ip_mac_cache from concurrent reads/writes between
+        # the sniff callback and the verification thread.
+        self._cache_lock = threading.RLock()
+
         self.detector_thread: Optional[
             threading.Thread
         ] = None
@@ -68,11 +71,10 @@ class Detector:
         self.presence_thread: Optional[
             threading.Thread
         ] = None
-        
+
         self.verification_attempts = 3
         self.packet_buffer = deque(maxlen=200)
         self.missed_scans: dict[str, int] = {}
-
 
 
 
@@ -121,16 +123,16 @@ class Detector:
         Number of tracked mappings.
         """
 
-        return len(
-            self.ip_mac_cache
-        )
+        with self._cache_lock:
+            return len(self.ip_mac_cache)
 
     def clear_cache(self) -> None:
         """
         Clear mapping cache.
         """
 
-        self.ip_mac_cache.clear()
+        with self._cache_lock:
+            self.ip_mac_cache.clear()
 
     def _run(self) -> None:
         """
@@ -230,14 +232,18 @@ class Detector:
 
         network = self.get_local_network()
 
-        packet = (
+        # FIX #5 (continued): the local variable `packet` here previously
+        # collided with the now-removed `from scapy import packet` import.
+        # Renaming to `arp_request` removes the ambiguity and makes the
+        # intent explicit.
+        arp_request = (
             Ether(dst="ff:ff:ff:ff:ff:ff")
             /
             ARP(pdst=network)
         )
 
         answered, _ = srp(
-            packet,
+            arp_request,
             timeout=3,
             retry=2,
             verbose=False,
@@ -272,9 +278,8 @@ class Detector:
                 device["mac"].upper()
             )
 
-            self.ip_mac_cache[
-                ip_address
-            ] = mac_address
+            with self._cache_lock:
+                self.ip_mac_cache[ip_address] = mac_address
 
             vendor = (
                 self.fingerprint.lookup_vendor(
@@ -324,25 +329,30 @@ class Detector:
         )
 
 
-    def process_packet(self, packet) -> None:
+    def process_packet(self, pkt) -> None:
         """
         Process incoming ARP packet.
         """
         if self.verification_in_progress.is_set():
             return
 
-        if not packet.haslayer(ARP):
+        if not pkt.haslayer(ARP):
             return
-        
-        if packet[ARP].op != 2:
-            return
-        
-        self.packet_buffer.append(
-            packet.copy()
-        )
 
-        sender_ip = packet[ARP].psrc
-        sender_mac = packet[ARP].hwsrc
+        if pkt[ARP].op != 2:
+            return
+
+        self.packet_buffer.append(pkt.copy())
+
+        sender_ip = pkt[ARP].psrc
+        sender_mac = pkt[ARP].hwsrc
+
+        # FIX #6: None/empty checks on sender_ip and sender_mac were done
+        # AFTER they were already used (buffer append, local_ip comparison,
+        # INVALID_MACS lookup). Moved the guard to the top so we never
+        # process a packet with missing fields.
+        if not sender_ip or not sender_mac:
+            return
 
         local_ip = get_if_addr(
             self.detect_interface()
@@ -359,12 +369,8 @@ class Detector:
         if sender_mac.lower() in INVALID_MACS:
             return
 
-        if not sender_ip or not sender_mac:
-            return
-
-        known_mac = self.ip_mac_cache.get(
-            sender_ip
-        )
+        with self._cache_lock:
+            known_mac = self.ip_mac_cache.get(sender_ip)
 
         if known_mac is None:
 
@@ -393,10 +399,9 @@ class Detector:
         Handle newly discovered device.
         """
         mac_address = mac_address.upper()
-        
-        self.ip_mac_cache[
-            ip_address
-        ] = mac_address
+
+        with self._cache_lock:
+            self.ip_mac_cache[ip_address] = mac_address
 
         vendor = (
             self.fingerprint.lookup_vendor(
@@ -418,7 +423,9 @@ class Detector:
             current_ip=ip_address,
             vendor=vendor
         )
-
+        print(
+            "[ARPEX] About to create NEW_DEVICE event"
+        )
         self.database.create_event(
             event_type="NEW_DEVICE",
             severity="LOW",
@@ -460,14 +467,16 @@ class Detector:
 
         try:
 
-            packet = (
+            # Renamed from `packet` to `arp_request` — same fix as in
+            # discover_devices(); avoids shadowing the removed stale import.
+            arp_request = (
                 Ether(dst="ff:ff:ff:ff:ff:ff")
                 /
                 ARP(pdst=ip_address)
             )
 
             answered, _ = srp(
-                packet,
+                arp_request,
                 timeout=1,
                 verbose=False,
                 iface=self.detect_interface()
@@ -678,7 +687,25 @@ class Detector:
             return None
 
     def verify_mapping(self, ip_address, old_mac, new_mac):
-        self.verification_in_progress.set()  # block other verifications
+        # FIX #7: verify_mapping used a single shared Event flag to prevent
+        # concurrent verifications, but the flag was set BEFORE doing any
+        # network I/O, so a second MAC-change event for a *different* IP
+        # would be silently dropped while the first verification was in
+        # progress. The fix uses a per-IP lock via a dict of threading.Lock
+        # objects so each IP address can be verified independently without
+        # blocking or dropping events for other IPs.
+        if not hasattr(self, '_verification_locks'):
+            self._verification_locks: dict[str, threading.Lock] = {}
+            self._vlock_meta = threading.Lock()
+
+        with self._vlock_meta:
+            if ip_address not in self._verification_locks:
+                self._verification_locks[ip_address] = threading.Lock()
+            ip_lock = self._verification_locks[ip_address]
+
+        if not ip_lock.acquire(blocking=False):
+            # Another thread is already verifying this IP; skip duplicate.
+            return
 
         try:
             results = []
@@ -703,11 +730,13 @@ class Detector:
                 )
                 return
 
-            self.ip_mac_cache[ip_address] = majority
+            with self._cache_lock:
+                self.ip_mac_cache[ip_address] = majority
+
             self.handle_attack(ip_address, old_mac, majority)
 
         finally:
-            self.verification_in_progress.clear()  # allow future verifications
+            ip_lock.release()
 
 
     def start_presence_monitor(
@@ -736,6 +765,8 @@ class Detector:
 
         while self.running:
 
+            print("[ARPEX] Presence scan running")
+
             try:
 
                 self.update_device_presence()
@@ -749,7 +780,6 @@ class Detector:
 
             time.sleep(10)
 
-
     def update_device_presence(
         self
     ) -> None:
@@ -759,16 +789,39 @@ class Detector:
 
         devices = self.discover_devices()
 
+        print(
+            f"[ARPEX] Found {len(devices)} devices"
+        )
+
         active_macs = {
             device["mac"].upper()
             for device in devices
         }
+
+        local_ip = get_if_addr(
+            self.detect_interface()
+        )
 
         stored_devices = (
             self.database.get_all_devices()
         )
 
         for device in stored_devices:
+
+            if device["current_ip"] == local_ip:
+
+                self.database.update_device(
+                    device["id"],
+                    currently_online=1,
+                    last_seen=datetime.utcnow().isoformat()
+                )
+
+                self.missed_scans.pop(
+                    device["mac_address"].upper(),
+                    None
+                )
+
+                continue
 
             mac = (
                 device["mac_address"]
@@ -853,7 +906,3 @@ class Detector:
                 hostname=hostname,
                 vendor=vendor
             )
-
-
-
-            

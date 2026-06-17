@@ -5,11 +5,6 @@ import json
 from pathlib import Path
 from typing import Optional
 
-from zeroconf import (
-    Zeroconf,
-    ServiceBrowser,
-    ServiceListener
-)
 
 DEFAULT_OUI_PATH = Path("config/oui.json")
 
@@ -37,6 +32,7 @@ class FingerprintManager:
         self.oui_path = oui_path
         self.oui_database: dict[str, str] = {}
         self.load_oui_database()
+
     def load_oui_database(self) -> None:
         """
         Load OUI database into memory.
@@ -136,8 +132,8 @@ class FingerprintManager:
             ":",
             ""
         )[:6]
-    
-    # PART 2 
+
+    # PART 2
 
     def lookup_vendor(
         self,
@@ -182,7 +178,7 @@ class FingerprintManager:
         return len(
             self.oui_database
         )
-    
+
 
     def lookup_hostname(
         self,

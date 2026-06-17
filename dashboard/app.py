@@ -37,22 +37,13 @@ def create_app() -> Flask:
             "index.html",
 
             device_count=len(devices),
-
             attack_count=len(attacks),
-
             attacker_count=len(attackers),
-
             event_count=len(events),
 
             recent_devices=devices[-5:],
-
             recent_attacks=attacks[-5:],
-
-            recent_events=events[-10:],
-
-            all_devices=devices,
-            all_attacks=attacks,
-            all_events=events
+            recent_events=events[-10:]
         )
 
     @app.route("/health")

@@ -54,10 +54,14 @@ class AlertManager:
         self.alert_history = deque(
             maxlen=1000
         )
+        # FIX #1: _lock was defined but never used — all methods accessing
+        # shared state (active_alerts, alert_history, _alert_counter) were
+        # unsynchronised and would corrupt data under concurrent access.
+        # Now every method that reads or mutates shared state acquires the lock.
         self._lock = threading.RLock()
 
     def _generate_alert_id(self) -> str:
-
+        # Called only while lock is already held.
         self._alert_counter += 1
 
         return (
@@ -82,26 +86,21 @@ class AlertManager:
     def total_active_alerts(
         self
     ) -> int:
-
-        return len(
-            self.active_alerts
-        )
+        with self._lock:
+            return len(self.active_alerts)
 
     def total_alert_history(
         self
     ) -> int:
-
-        return len(
-            self.alert_history
-        )
+        with self._lock:
+            return len(self.alert_history)
 
     def clear_alerts(
         self
     ) -> None:
-
-        self.active_alerts.clear()
-
-        self.alert_history.clear()
+        with self._lock:
+            self.active_alerts.clear()
+            self.alert_history.clear()
 
     def create_alert(
         self,
@@ -112,26 +111,20 @@ class AlertManager:
 
         now = datetime.utcnow().isoformat()
 
-        alert = Alert(
-            id=self._generate_alert_id(),
-            timestamp=now,
-            level=level.value,
-            title=title,
-            message=message,
-            expires_at=self._calculate_expiry(
-                level
+        with self._lock:
+            alert = Alert(
+                id=self._generate_alert_id(),
+                timestamp=now,
+                level=level.value,
+                title=title,
+                message=message,
+                expires_at=self._calculate_expiry(level)
             )
-        )
 
-        self.active_alerts.append(
-            alert
-        )
+            self.active_alerts.append(alert)
+            self.alert_history.append(alert)
 
-        self.alert_history.append(
-            alert
-        )
-
-        return alert.to_dict()
+            return alert.to_dict()
 
 
     def dismiss_alert(
@@ -139,17 +132,11 @@ class AlertManager:
         alert_id: str
     ) -> bool:
 
-        for alert in list(
-            self.active_alerts
-        ):
-
-            if alert.id == alert_id:
-
-                self.active_alerts.remove(
-                    alert
-                )
-
-                return True
+        with self._lock:
+            for alert in list(self.active_alerts):
+                if alert.id == alert_id:
+                    self.active_alerts.remove(alert)
+                    return True
 
         return False
 
@@ -158,11 +145,11 @@ class AlertManager:
         self
     ) -> list[dict]:
 
-        return [
-            alert.to_dict()
-            for alert
-            in self.active_alerts
-        ]
+        with self._lock:
+            return [
+                alert.to_dict()
+                for alert in self.active_alerts
+            ]
 
 
     def get_recent_alerts(
@@ -170,14 +157,12 @@ class AlertManager:
         limit: int = 50
     ) -> list[dict]:
 
-        history = list(
-            self.alert_history
-        )
+        with self._lock:
+            history = list(self.alert_history)
 
         return [
             alert.to_dict()
-            for alert
-            in history[-limit:]
+            for alert in history[-limit:]
         ]
 
     def cleanup_expired_alerts(
@@ -191,24 +176,17 @@ class AlertManager:
         """
 
         now = datetime.utcnow()
-
         removed = 0
 
-        for alert in list(
-            self.active_alerts
-        ):
-
-            expires_at = datetime.fromisoformat(
-                alert.expires_at
-            )
-
-            if expires_at <= now:
-
-                self.active_alerts.remove(
-                    alert
+        with self._lock:
+            for alert in list(self.active_alerts):
+                expires_at = datetime.fromisoformat(
+                    alert.expires_at
                 )
 
-                removed += 1
+                if expires_at <= now:
+                    self.active_alerts.remove(alert)
+                    removed += 1
 
         return removed
 
@@ -216,12 +194,9 @@ class AlertManager:
     def has_active_alerts(
         self
     ) -> bool:
+        with self._lock:
+            return len(self.active_alerts) > 0
 
-        return (
-            len(self.active_alerts)
-            > 0
-        )
-    
     def create_alert_from_event(
         self,
         event_type: str,
@@ -261,43 +236,35 @@ class AlertManager:
         if event_type not in mapping:
             return None
 
-        level, title = mapping[
-            event_type
-        ]
+        level, title = mapping[event_type]
 
         return self.create_alert(
             level=level,
             title=title,
             message=message
         )
-    
+
 
     def get_latest_alert(
         self
     ) -> Optional[dict]:
 
-        if not self.active_alerts:
-            return None
+        with self._lock:
+            if not self.active_alerts:
+                return None
 
-        return (
-            self.active_alerts[-1]
-            .to_dict()
-        )
+            return self.active_alerts[-1].to_dict()
 
 
     def active_alert_count(
         self
     ) -> int:
-
-        return len(
-            self.active_alerts
-        )
+        with self._lock:
+            return len(self.active_alerts)
 
 
     def history_alert_count(
         self
     ) -> int:
-
-        return len(
-            self.alert_history
-        )
+        with self._lock:
+            return len(self.alert_history)

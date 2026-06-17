@@ -1,3 +1,5 @@
+<div class="app-shell">
+
 <!DOCTYPE html>
 <html>
 
@@ -126,7 +128,23 @@
 
                 </td>
                 <td>
-                    {{ attack.timestamp.replace("T", " ")[:19] }}
+
+                {% if attack.pcap_file %}
+
+                <a href="/download/{{ attack.attack_id }}">
+                DOWNLOAD
+                </a>
+
+                {% else %}
+
+                -
+
+                {% endif %}
+
+                </td>
+
+                <td>
+                {{ attack.timestamp.replace("T", " ")[:19] }}
                 </td>
 
             </tr>
@@ -149,3 +167,4 @@ setTimeout(
 </body>
 
 </html>
+</div>

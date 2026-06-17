@@ -1,16 +1,46 @@
+```gitignore
+# Python cache
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
 
-.pytest_cache/
-
+# Virtual environments
 venv/
-.env/
+.venv/
+env/
+ENV/
 
-data/*.db
-
-captures/*.pcap
-
+# macOS
 .DS_Store
 
+# IDEs
 .vscode/
 .idea/
+
+# Environment variables
+.env
+
+# SQLite databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+*.log
+
+# Test & coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Packet captures / evidence
+captures/*.pcap
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# OS-generated files
+Thumbs.db
+```
