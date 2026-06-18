@@ -1,4 +1,9 @@
 # ARPEX
+
+<table>
+<tr>
+<td width="75%">
+
 ### Advanced ARP Spoofing Detection & Network Monitoring System
 
 > A Python-based cybersecurity tool that monitors local network traffic, detects suspicious ARP mapping changes, verifies anomalies to reduce false positives, and provides forensic evidence through a web dashboard.
@@ -8,6 +13,15 @@
 ![SQLite](https://img.shields.io/badge/Database-SQLite-green)
 ![Scapy](https://img.shields.io/badge/Packet%20Analysis-Scapy-red)
 ![License](https://img.shields.io/badge/License-MIT-yellow)
+
+</td>
+<td align="centre-right" width="25%">
+
+<img src="images/Arpex.png" width="110" alt="ARPEX Logo">
+
+</td>
+</tr>
+</table>
 
 ---
 
