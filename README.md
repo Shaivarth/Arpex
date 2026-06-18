@@ -6,7 +6,7 @@
 
 ### Advanced ARP Spoofing Detection & Network Monitoring System
 
-<span style="color: gray;">A Python-based cybersecurity tool that monitors local network traffic, detects suspicious ARP mapping changes, verifies anomalies to reduce false positives, and provides forensic evidence through a web dashboard.</span>
+> A Python-based cybersecurity tool that monitors local network traffic, detects suspicious ARP mapping changes, verifies anomalies to reduce false positives, and provides forensic evidence through a web dashboard.
 
 ![Python](https://img.shields.io/badge/Python-3.12-blue)
 ![Flask](https://img.shields.io/badge/Flask-Web%20Dashboard-black)
