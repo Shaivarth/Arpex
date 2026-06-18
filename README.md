@@ -14,11 +14,10 @@
 ![Scapy](https://img.shields.io/badge/Packet%20Analysis-Scapy-red)
 ![License](https://img.shields.io/badge/License-MIT-yellow)
 
-</td>
-<td align="right" width="25%">
-
-<img src="images/Arpex.png" width="110" alt="ARPEX Logo">
-
+<td width="25%">
+  <div align="center">
+    <img src="images/Arpex.png" width="120" alt="ARPEX Logo">
+  </div>
 </td>
 </tr>
 </table>
