@@ -15,7 +15,7 @@
 ![License](https://img.shields.io/badge/License-MIT-yellow)
 
 </td>
-<td align="centre-right" width="25%">
+<td align="right" width="25%">
 
 <img src="images/Arpex.png" width="110" alt="ARPEX Logo">
 
